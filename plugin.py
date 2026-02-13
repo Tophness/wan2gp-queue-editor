@@ -19,6 +19,8 @@ class QueueManagerPlugin(WAN2GPPlugin):
         super().__init__()
         self.qm_apply_btn = None
         self.qm_cancel_btn = None
+        self.qm_add_confirm_btn = None
+        self.qm_add_cancel_btn = None
         self.js_trigger_index = None
         self.main_state = None
         self.main_tabs = None
@@ -26,7 +28,28 @@ class QueueManagerPlugin(WAN2GPPlugin):
         self.main_edit_btn = None
         self.main_cancel_btn = None
         self.qm_buttons_row = None
+        self.qm_add_buttons_row = None
 
+        self.generate_btn = None
+        self.add_to_queue_btn = None
+        self.current_gen_column = None
+        self.queue_accordion = None
+        self.status_trigger = None
+        self.preview_trigger = None
+        self.output_trigger = None
+        self.gallery_tabs = None
+        self.current_gallery_tab = None
+        self.output = None
+        self.audio_files_paths = None
+        self.audio_file_selected = None
+        self.audio_gallery_refresh_trigger = None
+        self.abort_btn = None
+        self.earlystop_btn = None
+        self.gen_info = None
+        self.activate_status = None
+        self.qm_mode = None
+        self.qm_add_mode = None
+        self.js_trigger_add = None
         self.ordered_input_keys = []
         self.ordered_input_components = []
         self.captured_data = {}
@@ -55,6 +78,14 @@ class QueueManagerPlugin(WAN2GPPlugin):
         self.request_global("has_image_file_extension")
         self.request_global("has_video_file_extension")
 
+        self.request_global("init_process_queue_if_any")
+        self.request_global("activate_status")
+        self.request_global("process_tasks")
+        self.request_global("finalize_generation_with_state")
+        self.request_global("unload_model_if_needed")
+        self.request_global("get_preview_images")
+        self.request_global("pil_to_base64_uri")
+
         self.request_component("state")
         self.request_component("main_tabs")
         self.request_component("edit_btn")
@@ -62,6 +93,24 @@ class QueueManagerPlugin(WAN2GPPlugin):
         self.request_component("queue_action_input")
         self.request_component("queue_html")
         self.request_component("js_trigger_index")
+
+        self.request_component("generate_btn")
+        self.request_component("add_to_queue_btn")
+        self.request_component("current_gen_column")
+        self.request_component("queue_accordion")
+        self.request_component("status_trigger")
+        self.request_component("preview_trigger")
+        self.request_component("output_trigger")
+        self.request_component("gallery_tabs")
+        self.request_component("current_gallery_tab")
+        self.request_component("output")
+        self.request_component("audio_files_paths")
+        self.request_component("audio_file_selected")
+        self.request_component("audio_gallery_refresh_trigger")
+        self.request_component("abort_btn")
+        self.request_component("earlystop_btn")
+        self.request_component("gen_info")
+        self.request_component("activate_status")
 
         try:
             main_module = sys.modules['__main__']
@@ -159,6 +208,23 @@ class QueueManagerPlugin(WAN2GPPlugin):
         self.main_tabs = components.get("main_tabs")
         self.live_queue_html = components.get("queue_html")
         self.js_trigger_index = components.get("js_trigger_index")
+        
+        self.generate_btn = components.get("generate_btn")
+        self.add_to_queue_btn = components.get("add_to_queue_btn")
+        self.current_gen_column = components.get("current_gen_column")
+        self.queue_accordion = components.get("queue_accordion")
+        self.status_trigger = components.get("status_trigger")
+        self.preview_trigger = components.get("preview_trigger")
+        self.output_trigger = components.get("output_trigger")
+        self.gallery_tabs = components.get("gallery_tabs")
+        self.current_gallery_tab = components.get("current_gallery_tab")
+        self.output = components.get("output")
+        self.audio_files_paths = components.get("audio_files_paths")
+        self.audio_file_selected = components.get("audio_file_selected")
+        self.audio_gallery_refresh_trigger = components.get("audio_gallery_refresh_trigger")
+        self.abort_btn = components.get("abort_btn")
+        self.earlystop_btn = components.get("earlystop_btn")
+        self.gen_info = components.get("gen_info")
 
         self.ordered_input_keys = []
         self.ordered_input_components = []
@@ -171,8 +237,20 @@ class QueueManagerPlugin(WAN2GPPlugin):
         
         if self.main_edit_btn:
             self.insert_after("edit_btn", self.create_qm_buttons)
+        
+        if self.generate_btn:
+            self.insert_after("generate_btn", self.create_qm_add_buttons)
+
+    def _ensure_shared_components(self):
+        if self.qm_mode is None:
+            self.qm_mode = gr.State(False)
+        if self.qm_add_mode is None:
+            self.qm_add_mode = gr.State(False)
+        if self.js_trigger_add is None:
+            self.js_trigger_add = gr.Text(visible=False, elem_id="js_trigger_add_qm")
 
     def create_qm_buttons(self):
+        self._ensure_shared_components()
         with gr.Row(visible=False) as self.qm_buttons_row:
             self.qm_apply_btn = gr.Button("Apply Edits", variant="primary", scale=1, elem_id="qm_apply_btn")
             self.qm_cancel_btn = gr.Button("Cancel", scale=1)
@@ -195,11 +273,44 @@ class QueueManagerPlugin(WAN2GPPlugin):
                 }
             }"""
         )
+
+        def toggle_buttons(is_qm_mode):
+            return (gr.update(visible=is_qm_mode), gr.update(visible=not is_qm_mode), gr.update(visible=not is_qm_mode))
+
+        self.qm_mode.change(
+            fn=toggle_buttons,
+            inputs=[self.qm_mode],
+            outputs=[self.qm_buttons_row, self.main_edit_btn, self.main_cancel_btn]
+        )
         
         return self.qm_buttons_row
 
+    def create_qm_add_buttons(self):
+        self._ensure_shared_components()
+        with gr.Row(visible=False) as self.qm_add_buttons_row:
+            self.qm_add_confirm_btn = gr.Button("Add to Queue Editor", variant="primary", scale=1)
+            self.qm_add_cancel_btn = gr.Button("Cancel", scale=1)
+
+        inputs_list = [self.main_state] + self.ordered_input_components
+
+        self.qm_add_confirm_btn.click(
+            fn=self.prepare_apply, 
+            inputs=inputs_list,
+            outputs=[self.main_state, self.js_trigger_add]
+        )
+
+        def toggle_add_buttons(is_add_mode):
+            return (gr.update(visible=is_add_mode), gr.update(visible=not is_add_mode), gr.update(visible=not is_add_mode))
+
+        self.qm_add_mode.change(
+            fn=toggle_add_buttons,
+            inputs=[self.qm_add_mode],
+            outputs=[self.qm_add_buttons_row, self.generate_btn, self.add_to_queue_btn]
+        )
+
+        return self.qm_add_buttons_row
+
     def _sanitize_captured_data(self, data):
-        """Cleans Gradio gallery/tuple outputs into simple paths/objects."""
         cleaned = {}
         for k, v in data.items():
             if k in ['image_start', 'image_end', 'image_refs'] and isinstance(v, list):
@@ -226,9 +337,43 @@ class QueueManagerPlugin(WAN2GPPlugin):
                 else:
                     direct_data[key] = val
 
+        if state and isinstance(state, dict):
+            active_form = state.get("active_form", "add")
+            model_key = "model_type" if active_form == "add" else "edit_model_type"
+            model_type = state.get(model_key)
+            if model_type:
+                direct_data['model_type'] = model_type
+
         self.captured_data = self._sanitize_captured_data(direct_data)
         state["qm_intercept"] = True
         return state, str(time.time())
+
+    def _regenerate_task_previews(self, params):
+        start_b64, end_b64, start_labels, end_labels, start_data, end_data = [], [], [], [], None, None
+        
+        if hasattr(self, 'get_preview_images') and self.get_preview_images:
+            try:
+                start_data, end_data, start_labels, end_labels = self.get_preview_images(params)
+                
+                convert_fn = getattr(self, 'pil_to_base64_uri', None)
+                if not convert_fn:
+                    convert_fn = self._pil_to_base64
+
+                if start_data:
+                    start_b64 = [convert_fn(img, format="jpeg", quality=70) for img in start_data]
+                if end_data:
+                    end_b64 = [convert_fn(img, format="jpeg", quality=70) for img in end_data]
+            except Exception as e:
+                print(f"[QueueManager] Error generating previews: {e}")
+        
+        return {
+            "start_image_labels": start_labels or [],
+            "end_image_labels": end_labels or [],
+            "start_image_data_base64": start_b64,
+            "end_image_data_base64": end_b64,
+            "start_image_data": start_data,
+            "end_image_data": end_data
+        }
 
     def post_apply_handler(self, state, queue, index_being_edited):
         intercept = state.get("qm_intercept", False)
@@ -247,10 +392,13 @@ class QueueManagerPlugin(WAN2GPPlugin):
             orig_task = queue[index_being_edited]
 
             if 'activated_loras' in captured and self.update_loras_url_cache and self.get_lora_dir:
-                model_type = orig_task['params'].get('model_type')
+                model_type = captured.get('model_type') or orig_task['params'].get('model_type')
                 if model_type:
-                    lora_dir = self.get_lora_dir(model_type)
-                    captured['activated_loras'] = self.update_loras_url_cache(lora_dir, captured['activated_loras'])
+                    try:
+                        lora_dir = self.get_lora_dir(model_type)
+                        captured['activated_loras'] = self.update_loras_url_cache(lora_dir, captured['activated_loras'])
+                    except Exception as e:
+                        print(f"[QueueManager] Warning: Could not update lora cache: {e}")
 
             new_params = orig_task.get('params', {}).copy()
             new_params.update(captured)
@@ -260,7 +408,10 @@ class QueueManagerPlugin(WAN2GPPlugin):
             orig_task['steps'] = new_params.get('num_inference_steps', orig_task.get('steps'))
             orig_task['length'] = new_params.get('video_length', orig_task.get('length'))
             orig_task['repeats'] = new_params.get('repeat_generation', orig_task.get('repeats', 1))
-            
+
+            preview_data = self._regenerate_task_previews(new_params)
+            orig_task.update(preview_data)
+
             queue[index_being_edited] = orig_task
             gr.Info("Queue Manager: Task updated.")
 
@@ -276,6 +427,48 @@ class QueueManagerPlugin(WAN2GPPlugin):
         live_queue_html = self.update_queue_data(gen["queue"])
         
         return gr.Tabs(selected="plugin_queue_manager_tab"), queue, html_update, -1, live_queue_html, False
+
+    def post_add_handler(self, state, queue):
+        intercept = state.get("qm_intercept", False)
+        if not intercept:
+            return gr.Tabs(selected="plugin_queue_manager_tab"), queue, gr.update(), False, gr.update(), gr.update()
+
+        state["qm_intercept"] = False
+        captured = self.captured_data
+        
+        if captured:
+            new_id = 1000
+            if queue:
+                new_id = max([t.get('id', 0) for t in queue]) + 1
+                
+            model_type = captured.get('model_type')
+            
+            if 'activated_loras' in captured and self.update_loras_url_cache and self.get_lora_dir:
+                if model_type:
+                    try:
+                        lora_dir = self.get_lora_dir(model_type)
+                        captured['activated_loras'] = self.update_loras_url_cache(lora_dir, captured['activated_loras'])
+                    except Exception as e:
+                        print(f"[QueueManager] Warning: Could not update lora cache for add: {e}")
+
+            preview_data = self._regenerate_task_previews(captured)
+
+            new_task = {
+                "id": new_id,
+                "params": captured,
+                "prompt": captured.get("prompt", ""),
+                "steps": captured.get("num_inference_steps", 0),
+                "length": captured.get("video_length", 0),
+                "repeats": captured.get("repeat_generation", 1)
+            }
+            new_task.update(preview_data)
+
+            queue.append(new_task)
+            gr.Info("Queue Manager: New task added.")
+
+        html_update = self.generate_table_html(queue)
+
+        return gr.Tabs(selected="plugin_queue_manager_tab"), queue, html_update, False, gr.update(visible=True), gr.update(visible=True)
 
     def create_ui(self):
         css = """
@@ -313,7 +506,8 @@ class QueueManagerPlugin(WAN2GPPlugin):
         with gr.Blocks() as demo:
             self.queue_state = gr.State([])
             self.qm_editing_index = gr.State(-1) 
-            self.qm_mode = gr.State(False)
+            self._ensure_shared_components()
+
             self.qm_template_selection_mode = gr.State(False)
             self.qm_selected_template_idx = gr.State(-1)
             self.bulk_replace_state = gr.State([])
@@ -322,11 +516,18 @@ class QueueManagerPlugin(WAN2GPPlugin):
 
             with gr.Row():
                 with gr.Column(scale=1):
-                    gr.Markdown("### Queue File Operations")
+                    gr.Markdown("### Queue Loading / Unloading")
                     self.upload_btn = gr.UploadButton("Load queue.zip / .json", file_types=[".zip", ".json"], variant="primary")
                     self.download_btn = gr.DownloadButton("Save queue.zip", visible=False)
                     self.clear_btn = gr.Button("Clear Current List", variant="stop")
                     
+                    with gr.Column(visible=False) as self.send_group:
+                        gr.Markdown("### Send to Generator")
+                        self.send_mode = gr.Radio(["Replace Queue", "Append to Queue"], label="Action", value="Replace Queue")
+                        self.send_to_main_btn = gr.Button("Send to Video Generator Tab", variant="primary")
+
+                    gr.Markdown("### Queue Operations")
+                    self.add_new_task_btn = gr.Button("Add New Task", variant="primary")
                     self.bridge_btn = gr.Button("Bridge Images / Videos", variant="secondary")
 
                     with gr.Group(visible=False) as self.batch_group:
@@ -358,9 +559,6 @@ class QueueManagerPlugin(WAN2GPPlugin):
                             self.do_replace_btn = gr.Button("Replace All", variant="primary")
                             self.cancel_replace_btn = gr.Button("Cancel", variant="stop")
 
-                    gr.Markdown("---")
-                    gr.Markdown("**Instructions:**\n1. Load a `queue.zip`.\n2. Edit items (opens Main Edit Tab).\n3. 'Apply Edits' updates this list.\n4. Save modified zip.")
-
                 with gr.Column(scale=3):
                     gr.Markdown("### Tasks")
                     self.queue_display = gr.HTML(value="<div style='padding:20px; text-align:center; color:grey;'>No queue loaded. Upload a file to begin.</div>")
@@ -372,7 +570,7 @@ class QueueManagerPlugin(WAN2GPPlugin):
             self.upload_btn.upload(
                 fn=self.load_queue_file,
                 inputs=[self.upload_btn, self.state],
-                outputs=[self.queue_state, self.queue_display, self.download_btn]
+                outputs=[self.queue_state, self.queue_display, self.download_btn, self.send_group]
             )
 
             self.action_trigger.click(
@@ -389,7 +587,9 @@ class QueueManagerPlugin(WAN2GPPlugin):
                     self.batch_info,
                     self.batch_files,
                     self.batch_options_row,
-                    self.batch_btn
+                    self.batch_btn,
+                    self.download_btn,
+                    self.send_group
                 ]
             ).then(
                 fn=None,
@@ -398,8 +598,8 @@ class QueueManagerPlugin(WAN2GPPlugin):
             )
             
             self.clear_btn.click(
-                fn=lambda: ([], "<div style='padding:20px; text-align:center; color:grey;'>List cleared.</div>", gr.update(visible=False)),
-                outputs=[self.queue_state, self.queue_display, self.download_btn]
+                fn=lambda: ([], "<div style='padding:20px; text-align:center; color:grey;'>List cleared.</div>", gr.update(visible=False), gr.update(visible=False)),
+                outputs=[self.queue_state, self.queue_display, self.download_btn, self.send_group]
             )
             
             self.download_btn.click(
@@ -429,7 +629,7 @@ class QueueManagerPlugin(WAN2GPPlugin):
             self.batch_btn.click(
                 fn=self.process_batch_files,
                 inputs=[self.batch_files, self.qm_selected_template_idx, self.batch_mode, self.queue_state],
-                outputs=[self.queue_state, self.queue_display, self.download_btn, self.batch_group, self.bridge_btn, self.qm_template_selection_mode, self.bulk_replace_btn]
+                outputs=[self.queue_state, self.queue_display, self.download_btn, self.batch_group, self.bridge_btn, self.qm_template_selection_mode, self.bulk_replace_btn, self.send_group]
             )
 
             self.bulk_replace_btn.click(
@@ -456,9 +656,62 @@ class QueueManagerPlugin(WAN2GPPlugin):
                 outputs=[self.bulk_group, self.bridge_btn, self.bulk_replace_btn]
             )
 
+            self.add_new_task_btn.click(
+                fn=lambda: (gr.Tabs(selected="video_gen"), True),
+                inputs=[],
+                outputs=[self.main_tabs, self.qm_add_mode]
+            )
+
             self._wire_qm_logic()
 
         return demo
+
+    def send_queue_to_generator(self, local_queue, mode, main_state):
+        if not local_queue:
+            gr.Warning("Queue is empty.")
+            return gr.Tabs(selected="plugin_queue_manager_tab"), gr.update(), main_state
+
+        gen_info = self.get_gen_info(main_state)
+        required_keys = [
+            "file_list", 
+            "file_settings_list", 
+            "audio_file_list", 
+            "audio_file_settings_list"
+        ]
+        for key in required_keys:
+            if key not in gen_info:
+                gen_info[key] = []
+        current_main_queue = gen_info.get("queue", [])
+
+        import copy
+        tasks_to_send = copy.deepcopy(local_queue)
+
+        for task in tasks_to_send:
+            if 'params' in task:
+                task['params']['state'] = main_state
+
+        if mode == "Replace Queue":
+            final_queue = tasks_to_send
+            for i, task in enumerate(final_queue):
+                task['id'] = i + 1
+        else:
+            start_id = 1
+            if current_main_queue:
+                start_id = max([t.get('id', 0) for t in current_main_queue]) + 1
+
+            for i, task in enumerate(tasks_to_send):
+                task['id'] = start_id + i
+            
+            final_queue = current_main_queue + tasks_to_send
+
+        gen_info["queue"] = final_queue
+        gen_info["prompts_max"] = len(final_queue)
+
+        main_html = self.update_queue_data(final_queue)
+
+        gr.Info(f"Sent {len(tasks_to_send)} tasks to Video Generator ({mode}).")
+
+        return gr.Tabs(selected="video_gen"), main_html, main_state
 
     def _get_available_loras(self, model_type):
         if not self.get_lora_dir or not model_type:
@@ -665,11 +918,11 @@ class QueueManagerPlugin(WAN2GPPlugin):
     def process_batch_files(self, files, template_idx, mode, current_queue):
         if not files or len(files) < 2:
             gr.Warning("Need at least 2 files to create bridge tasks.")
-            return current_queue, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return current_queue, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         if not current_queue:
             gr.Warning("Queue is empty. Load a queue first to serve as a template.")
-            return current_queue, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return current_queue, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         try:
             idx = int(template_idx)
@@ -679,7 +932,7 @@ class QueueManagerPlugin(WAN2GPPlugin):
             template_task = current_queue[idx]
         except:
             gr.Warning("Please select a valid template task first.")
-            return current_queue, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return current_queue, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         file_paths = [f.name for f in files]
         file_paths.sort(key=lambda f: self.alphanum_key(os.path.basename(f)))
@@ -731,7 +984,7 @@ class QueueManagerPlugin(WAN2GPPlugin):
 
         if not new_tasks:
             gr.Warning("No valid tasks could be generated.")
-            return current_queue, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+            return current_queue, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
         if mode == "Replace Queue":
             final_queue = new_tasks
@@ -741,18 +994,9 @@ class QueueManagerPlugin(WAN2GPPlugin):
         html_update = self.generate_table_html(final_queue)
         gr.Info(f"Generated {len(new_tasks)} bridge tasks.")
 
-        return final_queue, html_update, gr.update(visible=True), gr.update(visible=False), gr.update(visible=True), False, gr.update(visible=True)
+        return final_queue, html_update, gr.update(visible=True), gr.update(visible=False), gr.update(visible=True), False, gr.update(visible=True), gr.update(visible=True)
 
     def _wire_qm_logic(self):
-        def toggle_buttons(is_qm_mode):
-            return (gr.update(visible=is_qm_mode), gr.update(visible=not is_qm_mode), gr.update(visible=not is_qm_mode))
-
-        self.qm_mode.change(
-            fn=toggle_buttons,
-            inputs=[self.qm_mode],
-            outputs=[self.qm_buttons_row, self.main_edit_btn, self.main_cancel_btn]
-        )
-
         if self.js_trigger_index:
             self.js_trigger_index.change(
                 fn=self.post_apply_handler,
@@ -767,11 +1011,68 @@ class QueueManagerPlugin(WAN2GPPlugin):
                 ]
             )
 
+        if self.js_trigger_add:
+            self.js_trigger_add.change(
+                fn=self.post_add_handler,
+                inputs=[self.main_state, self.queue_state],
+                outputs=[
+                    self.main_tabs, 
+                    self.queue_state, 
+                    self.queue_display, 
+                    self.qm_add_mode,
+                    self.download_btn,
+                    self.send_group
+                ]
+            )
+
         if self.qm_cancel_btn:
             self.qm_cancel_btn.click(
                 fn=self.cleanup_temp_task,
                 inputs=[self.main_state],
                 outputs=[self.qm_editing_index, self.main_tabs, self.live_queue_html, self.qm_mode]
+            )
+
+        if self.qm_add_cancel_btn:
+            self.qm_add_cancel_btn.click(
+                fn=lambda: (gr.Tabs(selected="plugin_queue_manager_tab"), False),
+                inputs=[],
+                outputs=[self.main_tabs, self.qm_add_mode]
+            )
+
+        if self.send_to_main_btn:
+             self.send_to_main_btn.click(
+                fn=self.send_queue_to_generator,
+                inputs=[self.queue_state, self.send_mode, self.main_state],
+                outputs=[self.main_tabs, self.live_queue_html, self.main_state]
+            ).then(
+                 fn=lambda s: (gr.update(visible=bool(self.get_gen_info(s).get("queue",[]))), gr.Accordion(open=True)) if bool(self.get_gen_info(s).get("queue",[])) else (gr.update(visible=False), gr.update()),
+                 inputs=[self.main_state],
+                 outputs=[self.current_gen_column, self.queue_accordion]
+            ).then(
+                fn=self.init_process_queue_if_any,
+                inputs=[self.main_state],
+                outputs=[self.generate_btn, self.add_to_queue_btn, self.current_gen_column]
+            ).then(
+                fn=self.activate_status,
+                inputs=[self.main_state],
+                outputs=[self.status_trigger]
+            ).then(
+                fn=self.process_tasks,
+                inputs=[self.main_state],
+                outputs=[self.preview_trigger, self.output_trigger],
+                trigger_mode="once"
+            ).then(
+                fn=self.finalize_generation_with_state,
+                inputs=[self.main_state],
+                outputs=[self.gallery_tabs, self.current_gallery_tab, self.output, self.audio_files_paths, 
+                         self.audio_file_selected, self.audio_gallery_refresh_trigger, self.abort_btn, 
+                         self.earlystop_btn, self.generate_btn, self.add_to_queue_btn, self.current_gen_column, 
+                         self.gen_info, self.queue_accordion, self.main_state],
+                trigger_mode="always_last"
+            ).then(
+                fn=self.unload_model_if_needed,
+                inputs=[self.main_state],
+                outputs=[]
             )
 
     def cleanup_temp_task(self, state):
@@ -787,7 +1088,7 @@ class QueueManagerPlugin(WAN2GPPlugin):
 
     def load_queue_file(self, file_obj, state):
         if not file_obj:
-            return [], "Error loading file.", gr.update(visible=False)
+            return [], "Error loading file.", gr.update(visible=False), gr.update(visible=False)
         filename = file_obj.name
         try:
             if filename.lower().endswith('.json'):
@@ -800,11 +1101,11 @@ class QueueManagerPlugin(WAN2GPPlugin):
             else:
                 queue_data, error = self._parse_queue_zip(filename, state)
                 if error:
-                    return [], f"Error parsing zip: {error}", gr.update(visible=False)
+                    return [], f"Error parsing zip: {error}", gr.update(visible=False), gr.update(visible=False)
             html_table = self.generate_table_html(queue_data)
-            return queue_data, html_table, gr.update(visible=True)
+            return queue_data, html_table, gr.update(visible=True), gr.update(visible=True)
         except Exception as e:
-            return [], f"Exception loading file: {str(e)}", gr.update(visible=False)
+            return [], f"Exception loading file: {str(e)}", gr.update(visible=False), gr.update(visible=False)
 
     def generate_table_html(self, queue, selected_index=-1, selection_mode=False):
         if not queue:
@@ -881,7 +1182,7 @@ class QueueManagerPlugin(WAN2GPPlugin):
     def handle_js_action(self, action_json, queue, state, selection_mode):
         updated_queue = queue
         html_update = gr.update()
-        main_queue_input_update = gr.update()
+        main_queue_input_update = ""
         index_update = -1
         qm_mode_update = False
         selected_template_idx_update = gr.update()
@@ -898,7 +1199,7 @@ class QueueManagerPlugin(WAN2GPPlugin):
         except:
             return (updated_queue, html_update, main_queue_input_update, index_update, qm_mode_update, 
                     selected_template_idx_update, selection_mode_update, batch_info_update, batch_files_update, 
-                    batch_options_update, batch_btn_update)
+                    batch_options_update, batch_btn_update, gr.update(), gr.update())
 
         if action == "select":
             index = int(param)
@@ -945,10 +1246,13 @@ class QueueManagerPlugin(WAN2GPPlugin):
                 index_update = index
                 main_queue_input_update = f"edit_{temp_id}"
                 qm_mode_update = True
-                    
+
+        has_items = len(updated_queue) > 0
+        buttons_vis = gr.update(visible=has_items)
+
         return (updated_queue, html_update, main_queue_input_update, index_update, qm_mode_update, 
                 selected_template_idx_update, selection_mode_update, batch_info_update, batch_files_update, 
-                batch_options_update, batch_btn_update)
+                batch_options_update, batch_btn_update, buttons_vis, buttons_vis)
 
     def save_current_queue(self, queue):
         if not queue:
